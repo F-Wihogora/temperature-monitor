@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Temperature Monitor — Wihogora Florence</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    header h1 {
+      font-size: 22px;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    header p {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-top: 4px;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 24px;
+      font-size: 13px;
+    }
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #64748b;
+      transition: background 0.4s;
+    }
+    .dot.connected { background: #22c55e; animation: pulse 2s infinite; }
+    .dot.error     { background: #ef4444; }
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.5; }
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 20px 16px;
+      text-align: center;
+    }
+    .card-label {
+      font-size: 12px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 36px;
+      font-weight: 700;
+      color: #38bdf8;
+      line-height: 1;
+    }
+    .card-value.danger { color: #f87171; }
+    .card-value.warn   { color: #fbbf24; }
+    .card-unit {
+      font-size: 14px;
+      color: #64748b;
+      margin-top: 4px;
+    }
+
+    .chart-box {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .chart-box h2 {
+      font-size: 14px;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 16px;
+    }
+
+    .log-box {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .log-box h2 {
+      font-size: 14px;
+      font-weight: 500;
+      color: #94a3b8;
+      margin-bottom: 12px;
+    }
+    #log {
+      font-family: monospace;
+      font-size: 12px;
+      color: #7dd3fc;
+      max-height: 180px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column-reverse;
+    }
+    .log-row { padding: 2px 0; border-bottom: 1px solid #1e293b; }
+    .log-time { color: #475569; margin-right: 8px; }
+
+    .info-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 20px;
+    }
+    .info-strip span { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 4px 10px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Temperature Monitor</h1>
+  <p>Candidate: Wihogora Florence &nbsp;|&nbsp; Trade: SPE — Embedded Systems</p>
+</header>
+
+<div class="status-bar">
+  <div class="dot" id="dot"></div>
+  <span id="status-text">Connecting to broker...</span>
+</div>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-label">Current temp</div>
+    <div class="card-value" id="val-current">--</div>
+    <div class="card-unit">°C</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Minimum</div>
+    <div class="card-value" id="val-min" style="color:#67e8f9">--</div>
+    <div class="card-unit">°C</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Maximum</div>
+    <div class="card-value" id="val-max" style="color:#f87171">--</div>
+    <div class="card-unit">°C</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Readings</div>
+    <div class="card-value" id="val-count" style="color:#a78bfa">0</div>
+    <div class="card-unit">total</div>
+  </div>
+</div>
+
+<div class="chart-box">
+  <h2>Live temperature history</h2>
+  <canvas id="chart" height="90"></canvas>
+</div>
+
+<div class="log-box">
+  <h2>Raw MQTT messages</h2>
+  <div id="log"></div>
+</div>
+
+<div class="info-strip">
+  <span>Broker: 157.173.101.159:9001</span>
+  <span>Topic: spe/temperature</span>
+  <span>Protocol: MQTT over WebSocket</span>
+</div>
+
+<script>
+  const BROKER   = "157.173.101.159";
+  const WS_PORT  = 9001;           // WebSocket port for browsers (must be enabled on broker)
+  const TOPIC    = "spe/temperature";
+  const MAX_PTS  = 40;
+
+  const labels = [], data = [];
+  let minVal = Infinity, maxVal = -Infinity, count = 0;
+
+  // ── Chart ─────────────────────────────────────────────────────────────────
+  const ctx = document.getElementById("chart").getContext("2d");
+  const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Temperature (°C)",
+        data,
+        borderColor: "#38bdf8",
+        backgroundColor: "rgba(56,189,248,0.08)",
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: "#38bdf8",
+        tension: 0.35,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#475569", maxTicksLimit: 8 }, grid: { color: "#1e3a5f" } },
+        y: {
+          ticks: { color: "#475569" },
+          grid: { color: "#1e3a5f" },
+          title: { display: true, text: "°C", color: "#64748b" }
+        }
+      }
+    }
+  });
+
+  // ── MQTT ──────────────────────────────────────────────────────────────────
+  const dot        = document.getElementById("dot");
+  const statusText = document.getElementById("status-text");
+
+  const client = mqtt.connect(`ws://${BROKER}:${WS_PORT}/mqtt`);
+
+  client.on("connect", () => {
+    dot.className = "dot connected";
+    statusText.textContent = `Connected to ${BROKER}`;
+    client.subscribe(TOPIC);
+  });
+
+  client.on("error", (err) => {
+    dot.className = "dot error";
+    statusText.textContent = "Connection error — check broker WebSocket port";
+    console.error(err);
+  });
+
+  client.on("offline", () => {
+    dot.className = "dot";
+    statusText.textContent = "Disconnected — retrying...";
+  });
+
+  client.on("message", (topic, payload) => {
+    const raw  = payload.toString().trim();
+    const temp = parseFloat(raw);
+    if (isNaN(temp)) return;
+
+    const now = new Date().toLocaleTimeString();
+    count++;
+
+    // Update stat cards
+    document.getElementById("val-current").textContent = temp.toFixed(1);
+    document.getElementById("val-count").textContent   = count;
+
+    if (temp < minVal) { minVal = temp; document.getElementById("val-min").textContent = temp.toFixed(1); }
+    if (temp > maxVal) { maxVal = temp; document.getElementById("val-max").textContent = temp.toFixed(1); }
+
+    // Colour the current reading by range
+    const cur = document.getElementById("val-current");
+    cur.className = "card-value" + (temp >= 35 ? " danger" : temp >= 28 ? " warn" : "");
+
+    // Chart
+    labels.push(now);
+    data.push(temp);
+    if (labels.length > MAX_PTS) { labels.shift(); data.shift(); }
+    chart.update();
+
+    // Log
+    const row = document.createElement("div");
+    row.className = "log-row";
+    row.innerHTML = `<span class="log-time">${now}</span>Topic: ${topic} &nbsp;→&nbsp; ${temp.toFixed(1)} °C`;
+    const log = document.getElementById("log");
+    log.prepend(row);
+    if (log.children.length > 50) log.lastChild.remove();
+  });
+</script>
+</body>
+</html>
